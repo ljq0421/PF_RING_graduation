@@ -1113,6 +1113,7 @@ int pfring_enable_rss_rehash(pfring *ring) {
 /* **************************************************** */
 
 int pfring_poll(pfring *ring, u_int wait_duration) {
+  
   if(likely((ring && ring->poll)))
     return ring->poll(ring, wait_duration);
 
@@ -1262,8 +1263,63 @@ int pfring_next_pkt_raw_timestamp(pfring *ring, u_int64_t *ts) {
 }
 
 /* **************************************************** */
+//add,分配初始bpf合集
+int pfring_set_bpf_filter_0(pfring *ring, char *filter_buffer) {
 
-int pfring_set_bpf_filter(pfring *ring, char *filter_buffer) {
+  /*char *pNext;
+  pNext = (char *)strtok(filter_buffer,";"); //必须使用(char *)进行强制类型转换(虽然不写有的编译器中不会出现指针错误)
+  char *pos[10]={0};
+  ring->bpf_filters=pos;
+  int count=0;
+  while(pNext != NULL) {
+    *(ring->bpf_filters)++=pNext;//指针加1
+    count++;
+    pNext = (char *)strtok(NULL,";");  //必须使用(char *)进行强制类型转换
+  }
+  ring->nowbpflevel=0; //现在使用第几个bpf规则
+  ring->bpfcount=count; //现在有几个bpf规则
+  int i=0;
+  for(i=-0;i<count;i++){
+    --ring->bpf_filters;//将指针移动到第一个
+  }
+  filter_buffer=ring->bpf_filters[0];
+  printf("filter_buffer=%s\n",ring->bpf_filters[0]);
+
+  return pfring_set_bpf_filter(ring, 0);//设置当前bpf规则，为第0个*/
+  int i=0;
+  for(i=0;i<10;i++){
+    ring->bpf_filters[i]=(char*)malloc(10*sizeof(char)); 
+  }
+  char *pNext;
+  pNext = (char *)strtok(filter_buffer,";"); //必须使用(char *)进行强制类型转换(虽然不写有的编译器中不会出现指针错误)
+  int count=0;
+  while(pNext != NULL) {
+    //ring->bpf_filters[count]=pNext;//指针加1
+    //memset(ring->bpf_filters[count], '\0', 20);
+    strcpy(ring->bpf_filters[count],pNext);
+    count++;
+    pNext = (char *)strtok(NULL,";");  //必须使用(char *)进行强制类型转换
+  }
+  ring->nowbpflevel=0; //现在使用第几个bpf规则
+  ring->bpfcount=count; //现在有几个bpf规则
+  for(i=0;i<count;i++){
+    printf("i:%d %s\n",i,ring->bpf_filters[i]);
+  }
+  filter_buffer=ring->bpf_filters[0];
+  printf("filter_buffer=%s\n",ring->bpf_filters[0]);
+
+  return pfring_set_bpf_filter(ring);//设置当前bpf规则，为第0个
+
+}
+
+/* **************************************************** */
+
+int pfring_set_bpf_filter(pfring *ring) {
+  
+  printf("pfring_set_bpf_filter,%s \n",ring->bpf_filters[ring->nowbpflevel]);
+
+  char *filter_buffer=ring->bpf_filters[ring->nowbpflevel];
+
   int rc = PF_RING_ERROR_NOT_SUPPORTED;
 
   if (!ring)

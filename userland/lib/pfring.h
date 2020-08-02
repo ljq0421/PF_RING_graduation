@@ -195,6 +195,11 @@ typedef struct pfring_if {
 /* ********************************* */
 
 struct __pfring {
+  //add,一个ring的bpf集合
+  char *bpf_filters[10];
+  u_int8_t nowbpflevel;
+  u_int8_t bpfcount;
+
   u_int8_t initialized;
   u_int8_t enabled;
   u_int8_t long_header;
@@ -1019,8 +1024,8 @@ int pfring_disable_ring(pfring *ring);
  * @param filter_buffer The filter to set.
  * @return 0 on success, a negative value otherwise.
  */
-int pfring_set_bpf_filter(pfring *ring, char *filter_buffer);
-
+int pfring_set_bpf_filter_0(pfring *ring, char *filter_buffer);
+int pfring_set_bpf_filter(pfring *ring);
 /**
  * Remove the BPF filter. 
  * @param ring The PF_RING handle.

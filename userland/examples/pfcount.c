@@ -1,5 +1,5 @@
 /*
- * (C) 2003-2020 - ntop 
+ * (C) 2003-2018 - ntop 
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,6 +43,9 @@
 #include <monetary.h>
 #include <locale.h>
 
+#include<sys/msg.h>
+#include<sys/ipc.h>
+
 #include "pfring.h"
 
 #include "pfutils.c"
@@ -68,12 +71,11 @@ pcap_dumper_t *dumper = NULL;
 u_int string_id = 1;
 char *out_pcap_file = NULL;
 FILE *match_dumper = NULL;
-u_int8_t do_close_dump = 0, is_sysdig = 0, chunk_mode = 0, check_ts = 0;
-u_int8_t check_seq_ip = 0, asymm_rss = 0;
+u_int8_t do_close_dump = 0, is_sysdig = 0, chunk_mode = 0, check_ts;
 int num_packets = 0;
 time_t last_ts = 0;
-u_int32_t last_ip = 0;
-u_int16_t min_len = 0;
+
+int QUEUE=0;
 
 struct app_stats {
   u_int64_t numPkts[MAX_NUM_THREADS];
@@ -92,9 +94,8 @@ struct strmatch {
 
 struct strmatch *matching_strings = NULL;
 
-u_int8_t wait_for_packet = 1, do_shutdown = 0, add_drop_rule = 0, use_extended_pkt_header = 0;
-u_int8_t touch_payload = 0, enable_hw_timestamp = 0, dont_strip_timestamps = 0, dont_strip_crc = 0;
-u_int8_t memcpy_test = 0;
+u_int8_t wait_for_packet = 1, do_shutdown = 0, add_drop_rule = 0;
+u_int8_t use_extended_pkt_header = 0, touch_payload = 0, enable_hw_timestamp = 0, dont_strip_timestamps = 0, memcpy_test = 0;
 
 volatile char memcpy_test_buffer[9216];
 
@@ -345,7 +346,6 @@ void drop_packet_rule(const struct pfring_pkthdr *h) {
     rule.rule_id = rule_id++;
     rule.vlan_id = hdr->vlan_id;
     rule.proto = hdr->l3_proto;
-    rule.ip_version = hdr->ip_version;
     rule.rule_action = dont_forward_packet_and_stop_rule_evaluation;
     rule.host4_peer_a = hdr->ip_src.v4, rule.host4_peer_b = hdr->ip_dst.v4;
     rule.port_peer_a = hdr->l4_src_port, rule.port_peer_b = hdr->l4_dst_port;
@@ -386,6 +386,8 @@ void sigproc(int sig) {
 
   if(called) return; else called = 1;
   stats->do_shutdown = 1;
+
+  
 
   if (!quiet)
     print_stats();
@@ -458,6 +460,14 @@ static int search_string(char *string_to_match, u_int string_to_match_len) {
 
 static int32_t thiszone;
 
+struct mymesg{
+	long int mtype;
+	char mtext[1500];
+};
+int id=0;
+struct mymesg pfmsg;
+key_t key;
+
 void print_packet(const struct pfring_pkthdr *h, const u_char *p, u_int8_t dump_match) {
   int s;
   u_int usec, nsec = 0;
@@ -518,7 +528,7 @@ void print_packet(const struct pfring_pkthdr *h, const u_char *p, u_int8_t dump_
 	     h->caplen, h->len);     
   }
 
-  if(verbose && h->len > min_len) printf("%s\n", dump_str);
+  if(verbose) printf("%s\n", dump_str);
   if(unlikely(dump_match)) {
     /* I need to find out which string matched */
     struct strmatch *m = matching_strings;
@@ -547,7 +557,7 @@ void print_packet(const struct pfring_pkthdr *h, const u_char *p, u_int8_t dump_
     dumpMatch(dump_str);
   }
   
-  if(verbose == 2 && h->len > min_len) {
+  if(verbose == 2) {
     int i, len = h->caplen;
 
     for(i = 0; i < len; i++)
@@ -555,6 +565,19 @@ void print_packet(const struct pfring_pkthdr *h, const u_char *p, u_int8_t dump_
 
     printf("\n");
   }
+  
+  if(verbose == 3){
+    key=ftok("/tmp",QUEUE);
+    id=msgget(key,IPC_CREAT|0666);
+    pfmsg.mtype=1;
+    strcpy(pfmsg.mtext,dump_str);
+    printf("pfmsg:%s\n",pfmsg.mtext);
+    if(msgsnd(id,(void *)&pfmsg,1500,0)<0){
+      printf("send msg error \n");
+      return;
+    }
+  }
+
 }
 
 /* ****************************************************** */
@@ -571,16 +594,6 @@ void dummyProcessPacket(const struct pfring_pkthdr *h,
       printf("Bad timestamp [expected ts >= %ld][received ts = %ld]\n", 
         last_ts, h->ts.tv_sec);
     last_ts = h->ts.tv_sec;
-  }
-
-  if (unlikely(check_seq_ip)) {
-    const struct pkt_parsing_info *hdr = &h->extended_hdr.parsed_pkt;
-    if(!h->ts.tv_sec) pfring_parse_pkt((u_char *) p, (struct pfring_pkthdr *) h, 4, 0, 1);
-    if (hdr->offset.l4_offset && hdr->ip_version == 4) {
-      if (last_ip && last_ip+1 != hdr->ip_src.v4)
-        printf("Bad IP [expected %u][received %u]\n", last_ip + 1, hdr->ip_src.v4);
-      last_ip = hdr->ip_src.v4;
-    }
   }
 
   if(touch_payload) {
@@ -602,8 +615,7 @@ void dummyProcessPacket(const struct pfring_pkthdr *h,
 
   if(unlikely(add_drop_rule)) {
     if(!h->ts.tv_sec) pfring_parse_pkt((u_char*)p, (struct pfring_pkthdr*)h, 4, 0, 1);
-    if (h->extended_hdr.parsed_pkt.offset.l4_offset) /* IP packet */
-      drop_packet_rule(h);
+    drop_packet_rule(h);
   }
 
   if (dumper) {
@@ -632,7 +644,7 @@ void printDevs() {
   dev = pfring_findalldevs();
 
   if (verbose)
-    printf("Name\tSystemName\tModule\tMAC\tBusID\tNumaNode\tStatus\tLicense\tExpiration\n");
+    printf("Name\tSystemName\tModule\tMAC\tBusID\tNumaNode\tStatus\tLicense\n");
   else
     printf("Available devices (-i):\n");
 
@@ -648,10 +660,10 @@ void printDevs() {
           dev->mac[0] & 0xFF, dev->mac[1] & 0xFF, dev->mac[2] & 0xFF, 
           dev->mac[3] & 0xFF, dev->mac[4] & 0xFF, dev->mac[5] & 0xFF);
 
-      printf("\t%04X:%02X:%02X.%X\t%d\t%s\t%s\t%ld\n",
+      printf("\t%04X:%02X:%02X.%X\t%d\t%s\t%s\n",
         dev->bus_id.slot, dev->bus_id.bus, dev->bus_id.device, dev->bus_id.function,
         busid2node(dev->bus_id.slot, dev->bus_id.bus, dev->bus_id.device, dev->bus_id.function),
-        dev->status ? "Up" : "Down", dev->license ? "Valid" : "NotFound", dev->license_expiration);
+        dev->status ? "Up" : "Down", dev->license ? "Valid" : "NotFound");
     } else {
       printf(" %d. %s\n", i++, dev->name);
     }
@@ -662,12 +674,11 @@ void printDevs() {
 /* *************************************** */
 
 void printHelp(void) {
-  printf("pfcount - (C) 2005-2020 ntop.org\n\n");
+  printf("pfcount - (C) 2005-2018 ntop.org\n\n");
   printf("-h              Print this help\n");
   printf("-i <device>     Device name. Use:\n"
 	 "                - ethX@Y for channels\n"
 	 "                - zc:ethX for ZC devices\n"
-	 "                - pcap:ethX or pcap:example.pcap for pcap devices/files\n"
 	 "                - sysdig: for capturing sysdig events\n"
 #ifdef HAVE_DAG
 	 "                - dag:dagX:Y for Endace DAG cards\n"
@@ -698,33 +709,25 @@ void printHelp(void) {
          "                   %d - tunneled src ip, src port, dst ip, dst port\n"
          "                   %d - tunneled src ip, src port, dst ip, dst port, proto (default)\n"
          "                   %d - tunneled src ip, src port, dst ip, dst port, proto, vlan\n"
-         "                   %d - tunneled src ip, src port, dst ip, dst port, proto for TCP, src ip, dst ip otherwise\n"
-         "                   %d - round-robin\n"
-	 "                   %d - src + dst ip (with duplication)\n",
+         "                  %d - tunneled src ip, src port, dst ip, dst port, proto for TCP, src ip, dst ip otherwise\n"
+         "                   %d - round-robin\n",
     cluster_per_flow_2_tuple, cluster_per_flow_4_tuple,
     cluster_per_flow_5_tuple, cluster_per_flow,
     cluster_per_flow_tcp_5_tuple,
     cluster_per_inner_flow_2_tuple, cluster_per_inner_flow_4_tuple,
     cluster_per_inner_flow_5_tuple, cluster_per_inner_flow,
     cluster_per_inner_flow_tcp_5_tuple,
-	 cluster_round_robin, cluster_per_flow_ip_with_dup_tuple);
+    cluster_round_robin);
   printf("-s              Enable hw timestamping\n");
   printf("-S              Do not strip hw timestamps (if present)\n");
-  printf("-F              Do not strip CRC/FCS (when not stripped by the adapter)\n");
   printf("-t              Touch payload (to force packet load on cache)\n");
   printf("-M              Packet memcpy (to test memcpy speed)\n");
   printf("-C <mode>       Work with the adapter in chunk mode (1=chunk API, 2=packet API)\n");
   printf("-T              Check packet timestamps\n");
-  printf("-U              Check packet sequential IP as generated by pfsend -b <num IPs>\n");
   printf("-x <path>       File containing strings to search string (case sensitive) on payload.\n");
-  printf("-o <path>       Dump packets to PCAP files starting with the specified path and name\n");
-  printf("                (e.g. -o /tmp/dump generates /tmp/dump.1 )\n");
-  printf("                In case of -x this dumps only matching packets)\n");
+  printf("-o <path>       Dump packets on the specified pcap (in case of -x this dumps only matching packets)\n");
   printf("-u <1|2>        For each incoming packet add a drop rule (1=hash, 2=wildcard rule)\n");
-  printf("-J              Do not enable promiscuous mode\n");
-  printf("-R              Do not reprogram RSS indirection table (Intel ZC only)\n");
   printf("-v <mode>       Verbose [1: verbose, 2: very verbose (print packet payload)]\n");
-  printf("-K <len>        Print only packets with length > <len> with -v\n");
   printf("-z <mode>       Enabled hw timestamping/stripping. Currently the supported TS mode are:\n"
 	 "                ixia\tTimestamped packets by ixiacom.com hardware devices\n");
   printf("-L              List all interfaces and exit (use -v for more info)\n");
@@ -942,13 +945,94 @@ void handleSigHup(int signalId) {
 }
 
 /* *************************************** */
+#include <sys/syscall.h>  
+#define gettidv1() syscall(__NR_gettid)//gettidv1(),get thread_id
+
+void mnresource(){
+  printf("%p %s %d %d\n",&(pd->bpf_filters[0]),pd->bpf_filters[0],pd->bpfcount,pd->nowbpflevel);
+  int BUF_SIZE=1024;
+  char buf[BUF_SIZE];
+  double cpumax=1.0;
+  double memmax=1.0;
+  int time=0,timemax=60;
+  float cpu,mem;
+  FILE * p_file_c = NULL;
+  FILE * p_file_m = NULL;
+  while(1){
+  	p_file_c = popen("ps aux|grep -v grep|grep pfcount|awk \'{print $3}\'", "r");
+  	p_file_m = popen("ps aux|grep -v grep|grep pfcount|awk \'{print $4}\'", "r");
+  	if (!p_file_c || !p_file_m) {
+  		fprintf(stderr, "Erro to popen");
+  	}
+  	while (fgets(buf, BUF_SIZE, p_file_c) != NULL) {
+  		cpu=atof(buf);
+  		//printf("cpu:%f\n",cpu);
+  	}
+  	while (fgets(buf, BUF_SIZE, p_file_m) != NULL) {
+  		mem=atof(buf);
+  		//printf("mem:%f\n",mem);
+  	}
+  	if(cpu>cpumax||mem>memmax){//反馈函数，有不满足要求的，向后调整捕获精度——捕获较少一些的信息
+          	time=0;
+   		if(pd->nowbpflevel+1<pd->bpfcount){
+			pd->nowbpflevel++;
+			pfring_set_bpf_filter(pd);
+			printf("1. %s\n",pd->bpf_filters[pd->nowbpflevel]);
+		}
+        	
+        }else{//反馈函数，各种满足要求，是否需要将捕捉精度向前调整——捕捉更加全面的信息
+        	time++;
+        	if(time>timemax){//满足要求的情况，持续时间超过了一个时间阈值，向前调整捕获精度
+		     if(pd->nowbpflevel-1>=0){
+			pd->nowbpflevel--;
+			pfring_set_bpf_filter(pd);
+			printf("2. %s\n",pd->bpf_filters[pd->nowbpflevel]);
+		     }
+        	}//else printf("3. %d %s\n",pd->nowbpflevel,pd->bpf_filters[pd->nowbpflevel]);
+        }
+  	sleep(1);
+  }
+  pclose(p_file_c);
+  pclose(p_file_m);
+}
+
+//interface for out
+void getnewfilter(){
+  int i=0;
+  int fd;  
+  while(1){
+    while ((fd = open("/home/ljq/Desktop/test0510/fifo",O_RDONLY)) < 0);
+    char buf[100];  
+    int len = read(fd,buf,100);   
+    char *pNext;
+    pNext = (char *)strtok(buf,"-");
+    int level=0,count=0;
+    while(pNext != NULL) {
+      if(count==0) level=atoi(pNext);
+      else{
+        int i=level;
+	for(i=pd->bpfcount;i>=level;i--){
+	  strcpy(pd->bpf_filters[i],pd->bpf_filters[i-1]);
+	}
+	strcpy(pd->bpf_filters[level-1],pNext);
+        if(level-1<=pd->nowbpflevel){
+	  pd->nowbpflevel++;
+	}
+      }
+      count++;
+      pNext = (char *)strtok(NULL,"-");  //必须使用(char *)进行强制类型转换
+    }
+    if(count==2) pd->bpfcount++;//接收到了正确的输入
+    for(i=0;i<pd->bpfcount;i++) printf("after read bpfs: %p %d %s\n",&pd->bpf_filters[i],i,pd->bpf_filters[i]);
+  }
+}
 
 #define MAX_NUM_STRINGS  32
 
 int main(int argc, char* argv[]) {
   char *device = NULL, c, buf[32], path[256] = { 0 }, *reflector_device = NULL;
   u_char mac_address[6] = { 0 };
-  int promisc = 1, snaplen = DEFAULT_SNAPLEN, rc;
+  int promisc, snaplen = DEFAULT_SNAPLEN, rc;
   u_int clusterId = 0;
   u_int8_t enable_ixia_timestamp = 0, list_interfaces = 0;
   u_int32_t flags = 0;
@@ -957,33 +1041,27 @@ int main(int argc, char* argv[]) {
   u_int16_t watermark = 0, poll_duration = 0,
     cpu_percentage = 0, rehash_rss = 0;
   char *bpfFilter = NULL;
+  //add
+  char *bpf_filters[10]={0};
+
   cluster_type cluster_hash_type = cluster_per_flow_5_tuple;
 
   startTime.tv_sec = 0;
   thiszone = gmt_to_local(0);
 
-  while((c = getopt(argc,argv,"hi:c:C:Fd:H:Jl:Lv:ae:n:w:o:p:qb:rg:u:mtsSx:f:z:N:MRTUK:")) != '?') {
+  while((c = getopt(argc,argv,"hi:c:C:d:H:l:Lv:ae:n:w:o:p:qb:rg:u:mtsSx:f:z:N:MT:Q:")) != '?') {
     if((c == 255) || (c == -1)) break;
 
     switch(c) {
+    case 'Q':
+      QUEUE=atoi(optarg);
+      break;
     case 'h':
       printHelp();
       exit(0);
       break;
     case 'a':
       wait_for_packet = 0;
-      break;
-    case 'b':
-      cpu_percentage = atoi(optarg);
-      break;
-    case 'c':
-      clusterId = atoi(optarg);
-      break;
-    case 'C':
-      chunk_mode = atoi(optarg);
-      break;
-    case 'd':
-      reflector_device = strdup(optarg);
       break;
     case 'e':
       switch(atoi(optarg)) {
@@ -994,31 +1072,26 @@ int main(int argc, char* argv[]) {
 	break;
       }
       break;
-    case 'f':
-      bpfFilter = strdup(optarg);
+    case 'c':
+      clusterId = atoi(optarg);
       break;
-    case 'F':
-      dont_strip_crc = 1;
+    case 'C':
+      chunk_mode = atoi(optarg);
       break;
-    case 'g':
-      bind_core = atoi(optarg);
+    case 'd':
+      reflector_device = strdup(optarg);
       break;
     case 'H':
-      {
-	int id = atoi(optarg);
-
-	if(id <= MAX_CLUSTER_TYPE_ID) 
-          cluster_hash_type = id;
-	else
-	  fprintf(stderr, "WARNING: Invalid hash type %u\n", atoi(optarg));
+      switch (atoi(optarg)) {
+        case cluster_per_flow_2_tuple:
+        case cluster_per_flow_4_tuple:
+        case cluster_per_flow_5_tuple: 
+        case cluster_per_flow:
+        case cluster_per_flow_tcp_5_tuple:
+        case cluster_round_robin:
+          cluster_hash_type = atoi(optarg); break;
+        default: fprintf(stderr, "WARNING: Invalid hash type %u\n", atoi(optarg)); break;
       }
-      break;
-    case 'i':
-      device = strdup(optarg);
-      if(strcmp(device, "sysdig:") == 0) is_sysdig = 1;
-      break;
-    case 'J':
-      promisc = 0;
       break;
     case 'l':
       snaplen = atoi(optarg);
@@ -1026,21 +1099,37 @@ int main(int argc, char* argv[]) {
     case 'L':
       list_interfaces = 1;
       break;
-    case 'm':
-      use_extended_pkt_header = 1;
-      break;
-    case 'M':
-      memcpy_test = 1;
+    case 'i':
+      device = strdup(optarg);
+      if(strcmp(device, "sysdig:") == 0) is_sysdig = 1;
       break;
     case 'n':
       num_threads = atoi(optarg);
       break;
-    case 'N':
-      num_packets = atoi(optarg);
+    case 'v':
+      if(optarg[0] == '1')
+	verbose = 1;
+      else if(optarg[0] == '2')
+	verbose = 2;
+      else if(optarg[0] == '3')
+	verbose = 3;
+      else {
+	printHelp();
+        exit(-1);
+      }
+      use_extended_pkt_header = 1;
       break;
-    case 'o':
-      out_pcap_file = optarg;
-      if (strcmp(out_pcap_file, "-") == 0) quiet = 1; 
+    case 'f':
+      bpfFilter = strdup(optarg);
+      break;
+    case 'w':
+      watermark = atoi(optarg);
+      break;
+    case 'b':
+      cpu_percentage = atoi(optarg);
+      break;
+    case 'm':
+      use_extended_pkt_header = 1;
       break;
     case 'p':
       poll_duration = atoi(optarg);
@@ -1051,18 +1140,14 @@ int main(int argc, char* argv[]) {
     case 'r':
       rehash_rss = 1;
       break;
-    case 's':
-      enable_hw_timestamp = 1;
-      break;
-    case 'S':
-      dont_strip_timestamps = 1;
-      break;
-    case 'T':
-      check_ts = 1;
-      last_ts = time(NULL);
-      break;
     case 't':
       touch_payload = 1;
+      break;
+    case 'M':
+      memcpy_test = 1;
+      break;
+    case 'g':
+      bind_core = atoi(optarg);
       break;
     case 'u':
       switch(add_drop_rule = atoi(optarg)) {
@@ -1074,29 +1159,27 @@ int main(int argc, char* argv[]) {
 	add_drop_rule = 2;
 	break;
       }
-      use_extended_pkt_header = 1;
-      break;
-    case 'U':
-      check_seq_ip = 1;
-      use_extended_pkt_header = 1;
-      break;
-    case 'v':
-      if(optarg[0] == '1')
-	verbose = 1;
-      else if(optarg[0] == '2')
-	verbose = 2;
-      else {
-	printHelp();
-        exit(-1);
-      }
-      use_extended_pkt_header = 1;
-      break;
-    case 'w':
-      watermark = atoi(optarg);
       break;
     case 'x':
       load_strings(optarg);      
       use_extended_pkt_header = 1;
+      break;
+    case 'N':
+      num_packets = atoi(optarg);
+      break;
+    case 'o':
+      out_pcap_file = optarg;
+      if (strcmp(out_pcap_file, "-") == 0) quiet = 1; 
+      break;
+    case 's':
+      enable_hw_timestamp = 1;
+      break;
+    case 'S':
+      dont_strip_timestamps = 1;
+      break;
+    case 'T':
+      check_ts = 1;
+      last_ts = time(NULL);
       break;
     case 'z':
       if(strcmp(optarg, "ixia") == 0)
@@ -1104,12 +1187,6 @@ int main(int argc, char* argv[]) {
       else
 	fprintf(stderr, "WARNING: unknown -z option, it has been ignored\n");
       break;      
-    case 'K':
-      min_len = atoi(optarg);
-      break;
-    case 'R':
-      asymm_rss = 1;
-      break;
     }
   }
 
@@ -1127,6 +1204,9 @@ int main(int argc, char* argv[]) {
 
   if ((stats = calloc(1, sizeof(struct app_stats))) == NULL)
     return -1;
+
+  /* hardcode: promisc=1, to_ms=500 */
+  promisc = 1;
 
   if(wait_for_packet && (cpu_percentage > 0)) {
     if(cpu_percentage > 99) cpu_percentage = 99;
@@ -1158,11 +1238,9 @@ int main(int argc, char* argv[]) {
   if(promisc)                 flags |= PF_RING_PROMISC;
   if(enable_hw_timestamp)     flags |= PF_RING_HW_TIMESTAMP;
   if(!dont_strip_timestamps)  flags |= PF_RING_STRIP_HW_TIMESTAMP;
-  if(dont_strip_crc)          flags |= PF_RING_DO_NOT_STRIP_FCS;
   if(chunk_mode)              flags |= PF_RING_CHUNK_MODE;
   if(enable_ixia_timestamp)   flags |= PF_RING_IXIA_TIMESTAMP;
-  if(asymm_rss)               flags |= PF_RING_ZC_NOT_REPROGRAM_RSS;
-  else                        flags |= PF_RING_ZC_SYMMETRIC_RSS;  /* Note that symmetric RSS is ignored by non-ZC drivers */
+  flags |= PF_RING_ZC_SYMMETRIC_RSS;  /* Note that symmetric RSS is ignored by non-ZC drivers */
   /* flags |= PF_RING_FLOW_OFFLOAD | PF_RING_FLOW_OFFLOAD_NOUPDATES;  to receive FlowID on supported adapters*/
   /* flags |= PF_RING_USERSPACE_BPF; to force userspace BPF even with kernel capture  */
 
@@ -1217,13 +1295,22 @@ int main(int argc, char* argv[]) {
   if((rc = pfring_set_socket_mode(pd, recv_only_mode)) != 0)
     fprintf(stderr, "pfring_set_socket_mode returned [rc=%d]\n", rc);
 
+  //add
   if(bpfFilter != NULL) {
-    rc = pfring_set_bpf_filter(pd, bpfFilter);
+    rc=pfring_set_bpf_filter_0(pd, bpfFilter);
+    
     if(rc != 0)
       fprintf(stderr, "pfring_set_bpf_filter(%s) returned %d\n", bpfFilter, rc);
     else if (!quiet)
       printf("Successfully set BPF filter '%s'\n", bpfFilter);
   }
+ 
+  //change1:创建线程1，监控资源占用
+  pthread_t tids1;
+  int thread1=pthread_create(&tids1,NULL,mnresource,NULL);
+
+  pthread_t tids2;
+  int thread2=pthread_create(&tids2,NULL,getnewfilter,NULL);
 
   if(clusterId > 0) {
     rc = pfring_set_cluster(pd, clusterId, cluster_hash_type);
@@ -1258,6 +1345,7 @@ int main(int argc, char* argv[]) {
     signal(SIGALRM, my_sigalarm);
     alarm(ALARM_SLEEP);
   }
+
 
   pfring_set_application_stats(pd, "Statistics not yet computed: please try again...");
   if(pfring_get_appl_stats_file_name(pd, path, sizeof(path)) != NULL)
@@ -1296,3 +1384,4 @@ int main(int argc, char* argv[]) {
   if(dumper) pcap_dump_close(dumper);
   return(0);
 }
+

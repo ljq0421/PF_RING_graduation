@@ -952,6 +952,9 @@ int __pfring_mod_remove_bpf_filter(pfring *ring) {
 /* **************************************************** */
 
 int pfring_mod_set_bpf_filter(pfring *ring, char *filter_buffer) {
+
+  printf("pfring_mod_set_bpf_filter %s\n",filter_buffer);
+
   int rc = -1;
 #ifdef ENABLE_BPF
   pcap_t *p;

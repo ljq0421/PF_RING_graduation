@@ -1,0 +1,12 @@
+Source: DEBIAN_PACKAGE-dkms
+Section: free
+Priority: optional
+Maintainer: Luca Deri <deri@ntop.org>
+Build-Depends: debhelper (>= 7), dkms, kmod
+Standards-Version: 3.8.1
+
+Package: DEBIAN_PACKAGE-dkms
+Architecture: all
+Depends: pfring (=7.7.0-2973), dkms (>= 1.95), linux-headers-generic, ${misc:Depends}
+Description: PF_RING driver in DKMS format. GIT info: dev:9924ba22fe98fd35ece020c168db36a4e888ced8
+

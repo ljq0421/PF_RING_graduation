@@ -375,6 +375,7 @@ int pfring_parse_pkt(u_char *data, struct pfring_pkthdr *hdr, u_int8_t level /* 
       (tcp->ack * TH_ACK_MULTIPLIER) + (tcp->urg * TH_URG_MULTIPLIER);
 
     analyzed = 4;
+    
   } else if(hdr->extended_hdr.parsed_pkt.l3_proto == IPPROTO_UDP) {
     struct udphdr *udp;
 
@@ -676,7 +677,9 @@ int pfring_print_parsed_pkt(char *buff, u_int buff_len, const u_char *p, const s
         "[tos=%d][tcp_seq_num=%u]",
         h->extended_hdr.parsed_pkt.ipv4_tos,
         h->extended_hdr.parsed_pkt.tcp.seq_num);
-
+    //add
+    buff_used += snprintf(&buff[buff_used], buff_len - buff_used,
+        "[flags=%d]",h->extended_hdr.parsed_pkt.tcp.flags);    
   } else if(h->extended_hdr.parsed_pkt.eth_type == 0x0806 /* ARP */) {
     buff_used += snprintf(&buff[buff_used], buff_len - buff_used, "[ARP]");
     if (buff_len >= h->extended_hdr.parsed_pkt.offset.l3_offset+30) {
@@ -856,6 +859,9 @@ int pfring_parse_bpf_filter(char *filter_buffer, u_int caplen,
 #endif
                             *filter) {
 #ifdef ENABLE_BPF
+
+  printf("pfring_parse_bpf_filter %s\n",filter_buffer);
+
   if (pcap_compile_nopcap(caplen,        /* snaplen_arg */
                           DLT_EN10MB,    /* linktype_arg */
                           filter,        /* program */
