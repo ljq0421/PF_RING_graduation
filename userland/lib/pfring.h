@@ -60,6 +60,9 @@
 #include <linux/pf_ring.h>
 #include <linux/if_ether.h>
 
+#include<sys/msg.h>
+#include<sys/ipc.h>
+
 #ifdef HAVE_REDIRECTOR
 #include <librdi.h>
 #endif
@@ -114,6 +117,18 @@ typedef void (*pfringProcesssPacket)(const struct pfring_pkthdr *h, const u_char
 
 /* ********************************* */
 
+typedef struct{
+	long int mtype;
+	double droprate;
+  char nowbpffilter[255];
+  int id;
+  key_t key;
+}mymesg;
+/*extern struct mymesg *pfmsg;
+extern int id;
+extern key_t key;*/
+
+/* ********************************* */
 typedef struct __pfring pfring; /* Forward declaration */
 
 /* ********************************* */
@@ -195,6 +210,8 @@ typedef struct pfring_if {
 /* ********************************* */
 
 struct __pfring {
+  char *nowbpffilter;
+
   u_int8_t initialized;
   u_int8_t enabled;
   u_int8_t long_header;

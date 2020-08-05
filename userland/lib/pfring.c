@@ -502,7 +502,7 @@ int pfring_set_reflector_device(pfring *ring, char *device_name) {
 }
 
 /* **************************************************** */
-
+#include <errno.h>
 int pfring_loop(pfring *ring, pfringProcesssPacket looper,
 		const u_char *user_bytes, u_int8_t wait_for_packet) {
   struct pfring_pkthdr hdr;
@@ -522,14 +522,15 @@ int pfring_loop(pfring *ring, pfringProcesssPacket looper,
     return -1;
 
   while(!ring->break_recv_loop) {
-    printf("RING (%s): tot_mem=%u/max_slot_len=%u/"
-	 "insert_off=%llu/remove_off=%llu/dropped=%lu/tot_pkts=%lu\n",
-	 ring->device_name, ring->slots_info->tot_mem,
-	 ring->slots_info->slot_len,   ring->slots_info->insert_off,
-	 ring->slots_info->remove_off, ring->slots_info->tot_lost,ring->slots_info->tot_pkts);
     //是否发生丢包现象，丢包率为多少
     //丢包率+内存占用+cpu占用+分析精度，反馈，调节过滤机制
-
+    //将丢包率通过消息队列发送给getdroprate
+    /*pfmsg.droprate=ring->slots_info->tot_lost * 1.0 / ring->slots_info->tot_pkts;
+    int ret=msgsnd(pfmsg.id,(void *)&pfmsg,sizeof(double),0);
+    if(ret<0){
+      printf("send msg error %d\n",errno);
+    }*/
+    
     rc = ring->recv(ring, &buffer, 0, &hdr, wait_for_packet);
 
     if(rc < 0)

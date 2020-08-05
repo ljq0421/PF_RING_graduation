@@ -75,6 +75,10 @@ time_t last_ts = 0;
 u_int32_t last_ip = 0;
 u_int16_t min_len = 0;
 
+mymesg pfmsg; 
+int id=0;
+key_t key;
+
 struct app_stats {
   u_int64_t numPkts[MAX_NUM_THREADS];
   u_int64_t numBytes[MAX_NUM_THREADS];
@@ -944,6 +948,70 @@ void handleSigHup(int signalId) {
 
 /* *************************************** */
 
+#include <sys/syscall.h>  
+#define gettidv1() syscall(__NR_gettid)//gettidv1(),get thread_id
+
+void mnresource(){
+  key=ftok("/tmp",101);
+  id=msgget(key,IPC_CREAT|0666);
+  pfmsg.id=id;
+  pfmsg.key=key;
+
+  while(1){
+    //丢包率
+    if(pd->slots_info->tot_pkts!=0) pfmsg.droprate=pd->slots_info->tot_lost * 1.0 / pd->slots_info->tot_pkts;
+    else pfmsg.droprate=0.0;
+    pfmsg.mtype=1;
+    int ret=msgsnd(pfmsg.id,(void *)&pfmsg,sizeof(double),0);
+    if(ret<0) printf("send msg error %d\n",errno);
+    //cpu、内存占用率
+    int BUF_SIZE=1024;
+    char buf[BUF_SIZE];
+    float cpu,mem;
+    FILE * p_file_c = NULL;
+    FILE * p_file_m = NULL;
+    p_file_c = popen("ps aux|grep -v grep|grep pfcount|awk \'{print $3}\'", "r");
+  	p_file_m = popen("ps aux|grep -v grep|grep pfcount|awk \'{print $4}\'", "r");
+  	if (!p_file_c || !p_file_m){
+      fprintf(stderr, "Erro to popen");
+      continue;
+    }
+  	while (fgets(buf, BUF_SIZE, p_file_c) != NULL) {
+  		cpu=atof(buf);
+  		printf("cpu:%f\n",cpu);
+  	}
+  	while (fgets(buf, BUF_SIZE, p_file_m) != NULL) {
+  		mem=atof(buf);
+  		printf("mem:%f\n",mem);
+  	}
+    //精确度
+    //根据丢包率、资源占用率、分析精确度，调整bpf
+    if(pfmsg.droprate+cpu+mem>0.0){
+      printf("need to change %s\n",pd->nowbpffilter);
+      pfmsg.mtype=2;
+      strcpy(pfmsg.nowbpffilter,pd->nowbpffilter);
+      printf("%s\n",pfmsg.nowbpffilter);
+      ret=msgsnd(pfmsg.id,(void *)&pfmsg,255,0);
+      if(ret<0) printf("send msg error %d\n",errno);
+      //将当前bpf通过消息队列发送，加载bpf.txt中的过滤规则，找到当前的，找到当前过滤规则的下一个
+      /*FILE *file = fopen("bpfs.txt", "r");
+      if(file == NULL){
+          printf("open error!\n");
+      }
+      while(1){
+        char buff[255];
+        fgets(buff, 255, (FILE*)file);
+        if(strcmp(buff,pd->))
+      }
+      
+      fclose(file);*/
+    }
+    sleep(1);
+  }
+}
+
+/* *************************************** */
+
 #define MAX_NUM_STRINGS  32
 
 int main(int argc, char* argv[]) {
@@ -989,15 +1057,21 @@ int main(int argc, char* argv[]) {
       break;
     case 'e':
       switch(atoi(optarg)) {
-      case rx_and_tx_direction:
-      case rx_only_direction:
-      case tx_only_direction:
-	direction = atoi(optarg);
-	break;
+        case rx_and_tx_direction:
+        case rx_only_direction:
+        case tx_only_direction:
+          direction = atoi(optarg);
+        break;
       }
       break;
     case 'f':
       bpfFilter = strdup(optarg);
+      FILE *file = fopen("bpfs.txt", "w");
+      if(file == NULL){
+          printf("open error!\n");
+      }
+      fputs(bpfFilter, file);
+      fclose(file);
       break;
     case 'F':
       dont_strip_crc = 1;
@@ -1224,11 +1298,23 @@ int main(int argc, char* argv[]) {
 
   if(bpfFilter != NULL) {
     rc = pfring_set_bpf_filter(pd, bpfFilter);
+    //初始bpf,写入文件
+    pd->nowbpffilter=bpfFilter;
+    FILE *file = fopen("bpfs.txt", "w");
+    if(file == NULL) printf("open error!\n");
+    fprintf(file, "%s\n", bpfFilter);
+    fclose(file);
+
     if(rc != 0)
       fprintf(stderr, "pfring_set_bpf_filter(%s) returned %d\n", bpfFilter, rc);
     else if (!quiet)
       printf("Successfully set BPF filter '%s'\n", bpfFilter);
   }
+
+  //创建线程1，监控资源占用
+  pthread_t tids1;
+  int thread1=pthread_create(&tids1,NULL,mnresource,NULL);
+
 
   if(clusterId > 0) {
     rc = pfring_set_cluster(pd, clusterId, cluster_hash_type);
