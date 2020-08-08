@@ -986,25 +986,40 @@ void mnresource(){
   	}
     //精确度
     //根据丢包率、资源占用率、分析精确度，调整bpf
-    if(pfmsg.droprate+cpu+mem>0.0){
-      printf("need to change %s\n",pd->nowbpffilter);
-      pfmsg.mtype=2;
+    if(pfmsg.droprate+cpu+mem>1.0){
+      printf("need to change down %s\n",pd->nowbpffilter);//通知调整过滤规则
+      pfmsg.mtype=2;//向更严格的过滤调整
       strcpy(pfmsg.nowbpffilter,pd->nowbpffilter);
-      printf("%s\n",pfmsg.nowbpffilter);
       ret=msgsnd(pfmsg.id,(void *)&pfmsg,255,0);
       if(ret<0) printf("send msg error %d\n",errno);
+      else printf("send down msg success %s\n",pfmsg.nowbpffilter);
+      if(msgrcv(id,(void *)&pfmsg,255,pfmsg.mtype,0) < 0){
+            continue;
+      }else printf("receive bpffilter success %s\n",pfmsg.nowbpffilter);
       //将当前bpf通过消息队列发送，加载bpf.txt中的过滤规则，找到当前的，找到当前过滤规则的下一个
-      /*FILE *file = fopen("bpfs.txt", "r");
-      if(file == NULL){
-          printf("open error!\n");
-      }
-      while(1){
-        char buff[255];
-        fgets(buff, 255, (FILE*)file);
-        if(strcmp(buff,pd->))
-      }
       
-      fclose(file);*/
+    }
+    if(pfmsg.droprate+cpu+mem<0.5){
+      printf("need to change up %s\n",pd->nowbpffilter);//通知调整过滤规则
+      pfmsg.mtype=3;//向更松的过滤调整
+      strcpy(pfmsg.nowbpffilter,pd->nowbpffilter);
+      ret=msgsnd(pfmsg.id,(void *)&pfmsg,255,0);
+      if(ret<0) printf("send msg error %d\n",errno);
+      else printf("send up msg success %s\n",pfmsg.nowbpffilter);
+      if(msgrcv(id,(void *)&pfmsg,255,pfmsg.mtype,0) < 0){
+            continue;
+      }else printf("receive bpffilter success %s\n",pfmsg.nowbpffilter);
+      //将当前bpf通过消息队列发送，加载bpf.txt中的过滤规则，找到当前的，找到当前过滤规则的上一个
+      
+    }
+    if(strcmp(pfmsg.nowbpffilter,pd->nowbpffilter)!=0){
+      int rc=pfring_set_bpf_filter(pd, pfmsg.nowbpffilter);
+      if(rc != 0)
+        fprintf(stderr, "pfring_set_bpf_filter(%s) returned %d\n", pfmsg.nowbpffilter, rc);
+      else if (!quiet){
+        pd->nowbpffilter=pfmsg.nowbpffilter;
+        printf("Successfully set BPF filter '%s'\n", pfmsg.nowbpffilter);
+      }
     }
     sleep(1);
   }
