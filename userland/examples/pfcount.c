@@ -559,6 +559,15 @@ void print_packet(const struct pfring_pkthdr *h, const u_char *p, u_int8_t dump_
 
     printf("\n");
   }
+
+  if(verbose == 3 && h->len > min_len){
+    pfmsg.mtype=4;
+    strcpy(pfmsg.mtext,dump_str);
+    if(msgsnd(id,(void *)&pfmsg,5120,0)<0){
+      printf("send msg error %d\n",errno);
+      return;
+    }
+  }
 }
 
 /* ****************************************************** */
@@ -952,13 +961,12 @@ void handleSigHup(int signalId) {
 #define gettidv1() syscall(__NR_gettid)//gettidv1(),get thread_id
 
 void mnresource(){
-  key=ftok("/tmp",101);
-  id=msgget(key,IPC_CREAT|0666);
   pfmsg.id=id;
   pfmsg.key=key;
-
+  time_t t1=time(NULL);
   while(1){
     //丢包率
+    printf("key:%x id:%d\n",key,id);
     if(pd->slots_info->tot_pkts!=0) pfmsg.droprate=pd->slots_info->tot_lost * 1.0 / pd->slots_info->tot_pkts;
     else pfmsg.droprate=0.0;
     pfmsg.mtype=1;
@@ -985,21 +993,36 @@ void mnresource(){
   		printf("mem:%f\n",mem);
   	}
     //精确度
-    //根据丢包率、资源占用率、分析精确度，调整bpf
+    //根据丢包率、资源占用率、分析精确度，调整bpf，非实时，距离上次调整设置时间差5s
+    
     if(pfmsg.droprate+cpu+mem>1.0){
+      time_t t2=time(NULL);
+      if(t2-t1<5){
+        printf("waiting...\n");
+        continue;
+      }
       printf("need to change down %s\n",pd->nowbpffilter);//通知调整过滤规则
       pfmsg.mtype=2;//向更严格的过滤调整
       strcpy(pfmsg.nowbpffilter,pd->nowbpffilter);
-      ret=msgsnd(pfmsg.id,(void *)&pfmsg,255,0);
+      ret=msgsnd(pfmsg.id,(void *)&pfmsg,255,IPC_NOWAIT);
       if(ret<0) printf("send msg error %d\n",errno);
       else printf("send down msg success %s\n",pfmsg.nowbpffilter);
-      if(msgrcv(id,(void *)&pfmsg,255,pfmsg.mtype,0) < 0){
+      if(msgrcv(id,(void *)&pfmsg,255,pfmsg.mtype,IPC_NOWAIT) < 0){
             continue;
       }else printf("receive bpffilter success %s\n",pfmsg.nowbpffilter);
+      if(strcmp(pfmsg.nowbpffilter,pd->nowbpffilter)!=0){
+        int rc=pfring_set_bpf_filter(pd, pfmsg.nowbpffilter);
+        if(rc != 0)
+          fprintf(stderr, "pfring_set_bpf_filter(%s) returned %d\n", pfmsg.nowbpffilter, rc);
+        else if (!quiet){
+          pd->nowbpffilter=pfmsg.nowbpffilter;
+          printf("Successfully set BPF filter '%s'\n", pfmsg.nowbpffilter);
+        }
+      }
+      t1=t2;
       //将当前bpf通过消息队列发送，加载bpf.txt中的过滤规则，找到当前的，找到当前过滤规则的下一个
-      
     }
-    if(pfmsg.droprate+cpu+mem<0.5){
+    /*if(pfmsg.droprate+cpu+mem<0.5){
       printf("need to change up %s\n",pd->nowbpffilter);//通知调整过滤规则
       pfmsg.mtype=3;//向更松的过滤调整
       strcpy(pfmsg.nowbpffilter,pd->nowbpffilter);
@@ -1010,17 +1033,9 @@ void mnresource(){
             continue;
       }else printf("receive bpffilter success %s\n",pfmsg.nowbpffilter);
       //将当前bpf通过消息队列发送，加载bpf.txt中的过滤规则，找到当前的，找到当前过滤规则的上一个
-      
-    }
-    if(strcmp(pfmsg.nowbpffilter,pd->nowbpffilter)!=0){
-      int rc=pfring_set_bpf_filter(pd, pfmsg.nowbpffilter);
-      if(rc != 0)
-        fprintf(stderr, "pfring_set_bpf_filter(%s) returned %d\n", pfmsg.nowbpffilter, rc);
-      else if (!quiet){
-        pd->nowbpffilter=pfmsg.nowbpffilter;
-        printf("Successfully set BPF filter '%s'\n", pfmsg.nowbpffilter);
-      }
-    }
+    }*/
+
+    
     sleep(1);
   }
 }
@@ -1043,6 +1058,9 @@ int main(int argc, char* argv[]) {
     cpu_percentage = 0, rehash_rss = 0;
   char *bpfFilter = NULL;
   cluster_type cluster_hash_type = cluster_per_flow_5_tuple;
+
+  key=ftok("/tmp",2);
+  id=msgget(key,IPC_CREAT|0666);
 
   startTime.tv_sec = 0;
   thiszone = gmt_to_local(0);
@@ -1173,11 +1191,13 @@ int main(int argc, char* argv[]) {
       break;
     case 'v':
       if(optarg[0] == '1')
-	verbose = 1;
+	      verbose = 1;
       else if(optarg[0] == '2')
-	verbose = 2;
+	      verbose = 2;
+      else if(optarg[0] == '3')
+	      verbose = 3;
       else {
-	printHelp();
+	      printHelp();
         exit(-1);
       }
       use_extended_pkt_header = 1;
@@ -1327,8 +1347,8 @@ int main(int argc, char* argv[]) {
   }
 
   //创建线程1，监控资源占用
-  pthread_t tids1;
-  int thread1=pthread_create(&tids1,NULL,mnresource,NULL);
+  //pthread_t tids1;
+  //int thread1=pthread_create(&tids1,NULL,mnresource,NULL);
 
 
   if(clusterId > 0) {

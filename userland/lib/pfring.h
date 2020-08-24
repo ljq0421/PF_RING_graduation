@@ -121,6 +121,7 @@ typedef struct{
 	long int mtype;
 	double droprate;
   char nowbpffilter[255];
+  char mtext[10240];
   int id;
   key_t key;
 }mymesg;

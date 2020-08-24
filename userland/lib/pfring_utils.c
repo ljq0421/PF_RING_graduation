@@ -676,7 +676,8 @@ int pfring_print_parsed_pkt(char *buff, u_int buff_len, const u_char *p, const s
         "[tos=%d][tcp_seq_num=%u]",
         h->extended_hdr.parsed_pkt.ipv4_tos,
         h->extended_hdr.parsed_pkt.tcp.seq_num);
-
+      buff_used += snprintf(&buff[buff_used], buff_len - buff_used,
+        "[flags=%d]",h->extended_hdr.parsed_pkt.tcp.flags);    
   } else if(h->extended_hdr.parsed_pkt.eth_type == 0x0806 /* ARP */) {
     buff_used += snprintf(&buff[buff_used], buff_len - buff_used, "[ARP]");
     if (buff_len >= h->extended_hdr.parsed_pkt.offset.l3_offset+30) {
