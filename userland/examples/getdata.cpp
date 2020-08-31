@@ -76,39 +76,25 @@ long long IPtoINT(const string & strIP){
     return dwAddr;
 }
 vector<vector<long long> > data;
-vector<int> indexOUSHI={1,1,1,1,1,1,1};
-long long YUZHI=1000000;
+//xshell sstime lltime ssrcip trytime len num len/num
+vector<float> indexOUSHI={0.027202,0.17289998,0.13315726,0.11151741,0.32148709,0.04911495,0.07559104,0.10903027};
+long long YUZHI=6000;
 MYSQL *conn;
 MYSQL_RES *res;
 MYSQL_ROW row;
+long long id=0;
 long long disOUSHI(vector<long long> a,vector<long long> b){
     long long res=0;
-    for(int i=0;i<a.size();i++){
-        res+=(a[i]-b[i])*(a[i]-b[i])*indexOUSHI[i];
+    for(int i=1;i<a.size();i++){
+        res+=(a[i]-b[i])*(a[i]-b[i])*indexOUSHI[i-1];
     }
-    return sqrt(res);//sqrt(res)
-}
-bool ifwrong(string stime,string etime,long long len,long long num,string srcip,string dstip){
-    //新到来的flow信息，与shh1中正常flow信息，对比，计算加权欧几里得距离，最大的若干个，是否超过阈值
-    long long sstime=handletime(stime);
-    long long eetime=handletime(etime);
-    long long lltime=eetime-sstime;
-    long long ssrcip=IPtoINT(srcip);
-    long long ddstip=IPtoINT(dstip);
-    vector<long long> a={sstime,eetime,lltime,ssrcip,ddstip,len,num};
-    vector<long long> dis;
-    for(int i=0;i<data.size();i++){
-        dis.push_back(disOUSHI(a,data[i]));
-        cout<<"dis:::"<<dis.back()<<endl;
-    }
-    sort(dis.begin(),dis.end());
-    if(dis.back()>=YUZHI) return false;
-    return true;
+    return sqrt(res);
 }
 void gettruedata(){
-    mysql_query(conn,"select * from ssh1");
+    char query3[1024];
+    sprintf(query3,"select * from ssh1 where id > %d",id);
+    mysql_query(conn,query3);
     res=mysql_store_result(conn);
-    int id=0;
     //id fid stimestamp src_ip dst_ip src_port dst_port len num etimestamp src_mac dst_mac
     while ((row = mysql_fetch_row(res))){
         //处理开始时间、结束时间、持续时间
@@ -117,15 +103,38 @@ void gettruedata(){
         long long ltime=etime-stime;
         //处理源ip、目的ip
         long long srcip=IPtoINT(string(row[3]));
-        long long dstip=IPtoINT(string(row[4]));
         //处理数据流长度、数据流包数量
-        long long len=stoi(row[7]);
-        long long num=stoi(row[8]);
-        id=stoi(row[0]);
-        data.push_back({stime,etime,ltime,srcip,dstip,len,num});
+        long long len=stoll(row[7]);
+        long long num=stoll(row[8]);
+        long long xshell=1;
+        long long trytime=1;
+        id=stoll(row[0]);
+        data.push_back({id,xshell,stime,ltime,srcip,trytime,len,num,len/num});
     }
 }
 
+bool ifwrong(long long id,string stime,string etime,long long len,long long num,string srcip,string dstip){
+    //新到来的flow信息，与ssh1中正常flow信息，对比，计算加权欧几里得距离，最大的若干个，是否超过阈值
+    gettruedata();
+    long long sstime=handletime(stime);
+    long long eetime=handletime(etime);
+    long long lltime=eetime-sstime;
+    long long ssrcip=IPtoINT(srcip);
+    long long xshell=1;
+    long long trytime=1;
+    int num_data=0;
+    vector<long long> a={id,xshell,sstime,lltime,ssrcip,trytime,len,num,len/num};
+    vector<long long> dis;
+    for(int i=0;i<data.size();i++){
+        long long tmp=disOUSHI(a,data[i]);
+        cout<<data[i][0]<<" "<<tmp<<endl;
+        if(tmp>=YUZHI){
+            num_data++;
+        }
+        if(num_data/data.size()>0.1) return false;
+    }
+    return true;
+}
 int main(int argc, char* argv[]){
     int id = 0,i=0;
     struct mymesg pfmsg;
@@ -147,10 +156,9 @@ int main(int argc, char* argv[]){
         printf("Connected...\n");
     }
     //得到往常的正常数据
-    //gettruedata();
+    gettruedata();
     unordered_map<string,struct packet > umap;
     while(1){
-        printf("key:%x id:%d\n",key,id);
         time_t now = time(0);
         tm *ltm = localtime(&now);
         char dump_str[5120];
@@ -183,26 +191,16 @@ int main(int argc, char* argv[]){
         nIndex = tmp.find("-> ",nIndex);
         dst_ip=tmp.substr(nIndex+3,tmp.find(':',nIndex)-nIndex-3);
         dst_port=tmp.substr(tmp.find(':',nIndex)+1,tmp.find("]",nIndex)-tmp.find(':',nIndex)-1);
+
+        if(src_port!="22" && dst_port!="22") continue;
         
         int start=tmp.find("len=",nIndex);
         len=tmp.substr(start+4,tmp.find("]",start)-start-4);
         start=tmp.find("flags=",nIndex);
         flags=tmp.substr(start+6,tmp.find("]",start)-start-6);
-        printf("flags:%s\n",flags.c_str());
         flags=getflag(flags);
         start=tmp.find("hash=",nIndex);
         flow_id=tmp.substr(start+5,tmp.find("]",start)-start-5);
-        /*cout<<"tmp:"<<tmp<<endl
-            <<"stimestamp:"<<stimestamp<<endl
-            <<"src_ip:"<<src_ip<<endl
-            <<"dst_ip:"<<dst_ip<<endl
-            <<"len:"<<len<<endl
-            <<"src_mac:"<<src_mac<<endl
-            <<"dst_mac:"<<dst_mac<<endl
-            <<"src_port:"<<src_port<<endl
-            <<"dst_port:"<<dst_port<<endl
-            <<"flags:"<<flags<<endl
-            <<"flow_id:"<<flow_id<<endl;*/
         if(umap.find(flow_id)==umap.end()){
             pac.stimestamp=stimestamp;
             pac.src_ip=src_ip;
@@ -230,21 +228,21 @@ int main(int argc, char* argv[]){
             long long num=umap[flow_id].num;
             string srcip=umap[flow_id].src_ip.c_str();
             string dstip=umap[flow_id].dst_ip.c_str();
-            //if(ifwrong(stime,stime,len,num,srcip,dstip)){//正常插入ssh1
+            if(ifwrong(0,stime,stime,len,num,srcip,dstip)){//正常插入ssh1
                 sprintf(query,"insert into ssh1(fid,stimestamp,src_ip,dst_ip,src_port,dst_port,len,num,etimestamp,src_mac,dst_mac) \
                     values ('%s','%s','%s','%s','%s','%s','%d','%d','%s','%s','%s')",
                     umap[flow_id].flow_id.c_str(),umap[flow_id].stimestamp.c_str(),umap[flow_id].src_ip.c_str(),
                     umap[flow_id].dst_ip.c_str(),umap[flow_id].src_port.c_str(),
                     umap[flow_id].dst_port.c_str(),umap[flow_id].len,umap[flow_id].num,
                     umap[flow_id].etimestamp.c_str(),umap[flow_id].src_mac.c_str(),umap[flow_id].dst_mac.c_str());
-            /*}else{//异常插入ssh2
+            }else{//异常插入ssh2
                 sprintf(query,"insert into ssh2(fid,stimestamp,src_ip,dst_ip,src_port,dst_port,len,num,etimestamp,src_mac,dst_mac) \
                     values ('%s','%s','%s','%s','%s','%s','%d','%d','%s','%s','%s')",
                     umap[flow_id].flow_id.c_str(),umap[flow_id].stimestamp.c_str(),umap[flow_id].src_ip.c_str(),
                     umap[flow_id].dst_ip.c_str(),umap[flow_id].src_port.c_str(),
                     umap[flow_id].dst_port.c_str(),umap[flow_id].len,umap[flow_id].num,
                     umap[flow_id].etimestamp.c_str(),umap[flow_id].src_mac.c_str(),umap[flow_id].dst_mac.c_str());
-            }*/
+            }
             int t2=mysql_query(conn,query); 
             if(t2){
                 printf("Error making query:%s\n",mysql_error(conn));
